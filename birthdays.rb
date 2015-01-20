@@ -36,7 +36,8 @@ def send_email(pair)
                "Thanks,\n" \
                "Vali"
 
-  email = gmail.compose do
+  email = gmail.generate_message do
+    from Email::USERNAME
     to pair[0][:email]
     subject "#{possessive} birthday"
     body email_body
