@@ -31,7 +31,8 @@ def send_email(pair)
                "You have been assigned to take care of #{possessive} " \
                "birthday present which takes place on the " \
                "#{pair[1][:day].ordinalize} of " \
-               "#{Date::MONTHNAMES[pair[1][:month]]}.\n" \
+               "#{Date::MONTHNAMES[pair[1][:month]]}. Please contact " \
+               "me for further details.\n " \
                "\n" \
                "Thanks,\n" \
                "Vali"
