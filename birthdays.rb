@@ -1,13 +1,12 @@
 require 'date'
+require 'optparse'
+require 'ostruct'
+
 require 'gmail'
 
-module Email
-  USERNAME = "username"
-  PASSWORD = "password"
-end
-
+# This class adds ordinal conversion capabilities to the Fixnum class.
 class Fixnum
-  def ordinalize
+  def to_ord
     if (11..13).include?(self % 100)
       "#{self}th"
     else
@@ -21,76 +20,139 @@ class Fixnum
   end
 end
 
-def send_email(pair)
-  gmail = Gmail.new Email::USERNAME, Email::PASSWORD
-
-  possessive = pair[1][:name] + "'" + (pair[1][:name].end_with?("s") ? "" : "s")
-
-  email_body = "Hi #{pair[0][:name]},\n" \
-               "\n" \
-               "You have been assigned to take care of #{possessive} " \
-               "birthday present which takes place on the " \
-               "#{pair[1][:day].ordinalize} of " \
-               "#{Date::MONTHNAMES[pair[1][:month]]}. Please contact " \
-               "me for further details.\n " \
-               "\n" \
-               "Thanks,\n" \
-               "Vali"
-
-  email = gmail.generate_message do
-    from Email::USERNAME
-    to pair[0][:email]
-    subject "#{possessive} birthday"
-    body email_body
+# Email class tailored to handle birthday emails.
+class Email
+  def initialize(pair, gmail)
+    @pair = pair
+    @gmail = gmail
   end
 
-  email.deliver!
+  def possessify(name)
+    name + "'" + (name.end_with?('s') ? '' : 's')
+  end
+
+  def compose_body(pair, possessive)
+    "Hi #{pair[0][:name]},\n" \
+    "\n" \
+    "You have been assigned to take care of #{possessive} " \
+    'birthday present which takes place on the ' \
+    "#{pair[1][:day].to_ord} of " \
+    "#{Date::MONTHNAMES[pair[1][:month]]}. Please contact " \
+    "me for further details.\n" \
+    "\n" \
+    "Thanks,\n" \
+    'Vali'
+  end
+
+  def send!(username)
+    pair = @pair
+    possessive = possessify pair[1][:name]
+
+    email_body = compose_body pair, possessive
+
+    email = @gmail.generate_message do
+      from username
+      to pair[0][:email]
+      subject "#{possessive} birthday"
+      body email_body
+    end
+
+    email.deliver!
+  end
 end
 
-File.open("dates") do |dates|
-  people = []
-  assignments = []
-  lines = dates.readlines
+def parse_people(lines)
+  lines.map do |line|
+    name, email, date = line.split(',').map(&:strip)
+    day, month = date.split('.').map(&:to_i)
 
-  lines.each do |line|
-    name, email, date = line.split(",").map {|token| token.strip}
-    day, month = date.split(".").map {|number| number.to_i}
-
-    people << {name: name, email: email, day: day, month: month}
+    { name: name, email: email, day: day, month: month }
   end
+end
 
-  next_month = DateTime.now.next_month.month
-
+def parse_assigned(assigned_file, people)
   already_assigned = []
 
-  File.open(".assigned") do |assigned_file|
-    unless assigned_file.eof?
-      assigned_names = assigned_file.readline.strip.split(",")
-      already_assigned = people.select {|person| assigned_names.include? person[:name]}
+  unless assigned_file.eof?
+    assigned_names = assigned_file.read.gsub(/\s+/, '').split(',')
+    already_assigned = people.select do |person|
+      assigned_names.include? person[:name]
     end
   end
 
-  upcoming = people.select {|person| person[:month] == next_month}
+  already_assigned
+end
+
+def assign(upcoming, remaining, assigned_file)
+  upcoming.map do |person|
+    assigned = remaining.sample
+    remaining.delete assigned
+
+    assigned_file.print "#{assigned[:name]},"
+
+    [assigned, person]
+  end
+end
+
+options = OpenStruct.new
+
+options.dates = 'dates'
+options.assigned = '.assigned'
+options.month = DateTime.now.next_month.month
+
+OptionParser.new do |opts|
+  opts.banner = 'Usage: ruby birthdays.rb -u USERNAME -p PASSWORD [OPTIONS]'
+
+  opts.on(
+    '-u',
+    '--username USERNAME',
+    'Gmail username'
+  ) { |username| options.username = username }
+  opts.on(
+    '-p',
+    '--password PASSWORD',
+    'Gmail password'
+  ) { |password| options.password = password }
+
+  opts.on(
+    '-d',
+    '--dates PATH',
+    'Path to dates file (default ./dates)'
+  ) { |dates| options.dates = dates }
+  opts.on(
+    '-a',
+    '--assigned PATH',
+    'Path to assigned file (default ./.assigned)'
+  ) { |assigned| options.assigned = assigned }
+  opts.on(
+    '-m',
+    '--month MONTH',
+    'Number of the month (default next month)'
+  ) { |month| options.month = month.to_i }
+end.parse!
+
+missing = %w(username password).select { |opt| options.send(opt).nil? }
+abort "Missing #{missing.join ', '}." unless missing.empty?
+
+File.open options.dates do |dates|
+  people = parse_people dates.readlines
+
+  already_assigned = parse_assigned File.open(options.assigned), people
+
+  upcoming = people.select { |person| person[:month] == options.month }
   remaining = people - upcoming - already_assigned
 
-  if remaining.empty?
-    File.open(".assigned", "w") {|file| file.truncate(0)}
+  if remaining.length < upcoming.length
+    File.open(options.assigned, 'w') { |file| file.truncate 0 }
 
     remaining = people - upcoming
   end
 
-  File.open(".assigned", "a") do |assigned_file|
-    upcoming.each do |person|
-      assigned = remaining.sample
-      remaining.delete assigned
+  gmail = Gmail.new options.username, options.password
 
-      assigned_file.print "#{assigned[:name]},"
+  assignments = assign upcoming, remaining, File.open(options.assigned, 'a')
 
-      assignments << [assigned, person]
-    end
-  end
-
-  assignments.each {|pair| send_email pair}
-
-  assignments.each {|pair| puts "#{pair[0][:name]} -> #{pair[1][:name]}"}
+  assignments.map { |pair| Email.new pair, gmail }
+    .map { |email| email.send! options.username }
+  assignments.each { |pair| puts "#{pair[0][:name]} -> #{pair[1][:name]}" }
 end
